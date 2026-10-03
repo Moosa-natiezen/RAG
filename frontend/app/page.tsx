@@ -27,6 +27,10 @@ import {
 } from "lucide-react";
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 
+import { AuthGate } from "@/components/auth-gate";
+import { apiRequest } from "@/lib/api";
+import { authClient } from "@/lib/auth-client";
+
 type Citation = {
   id: string;
   docId: string;
@@ -38,11 +42,26 @@ type Citation = {
 };
 
 type ChatMessage = {
-  id: number;
+  id: number | string;
   role: "user" | "assistant";
   text: string;
   citations?: Citation[];
   fallback?: boolean;
+};
+
+type ConversationRecord = {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type StoredMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  citations: Record<string, unknown>[];
+  created_at: string;
 };
 
 const travelCitation: Citation = {
@@ -59,29 +78,6 @@ const travelCitation: Citation = {
 
 const citationToken = `[Doc: ${travelCitation.docId}, Section: ${travelCitation.section}]`;
 
-const initialMessages: ChatMessage[] = [
-  {
-    id: 1,
-    role: "user",
-    text: "What is the deadline for submitting travel expense receipts, and what is the meal allowance for overseas trips?",
-  },
-  {
-    id: 2,
-    role: "assistant",
-    text: `Submit receipts through the Expense Portal within 14 business days. ${citationToken}\n\nFor international business travel, the daily meal stipend is up to $75. ${citationToken}`,
-    citations: [travelCitation],
-  },
-];
-
-const historyItems = [
-  { title: "Travel expense receipt deadline", date: "Today", active: true },
-  { title: "Customer data password policy", date: "Today" },
-  { title: "Engineering access review", date: "Yesterday" },
-  { title: "Remote work equipment policy", date: "Yesterday" },
-  { title: "Q3 procurement thresholds", date: "Previous 7 days" },
-  { title: "Incident response ownership", date: "Previous 7 days" },
-];
-
 function CitationPill({ citation, onOpen }: { citation: Citation; onOpen: () => void }) {
   return (
     <button className="citation-pill" onClick={onOpen} type="button" aria-label={`Open source: ${citation.docId}, ${citation.section}`} data-tooltip={citation.childText}>
@@ -90,14 +86,41 @@ function CitationPill({ citation, onOpen }: { citation: Citation; onOpen: () => 
   );
 }
 
-export default function Home() {
+function citationFromRecord(record: Record<string, unknown>): Citation {
+  return {
+    id: String(record.id ?? record.child_id ?? record.doc_id ?? "source"),
+    docId: String(record.docId ?? record.doc_id ?? "internal-document"),
+    section: String(record.section ?? record.section_header ?? "Source section"),
+    title: String(record.title ?? record.doc_id ?? "Internal source"),
+    updated: String(record.updated ?? record.last_updated ?? "Verified source"),
+    parentText: String(record.parentText ?? record.parent_text ?? record.childText ?? record.child_text ?? ""),
+    childText: String(record.childText ?? record.child_text ?? "Source passage"),
+  };
+}
+
+function historyDate(dateValue: string): string {
+  const date = new Date(dateValue);
+  const today = new Date();
+  if (date.toDateString() === today.toDateString()) return "Today";
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  return date.toDateString() === yesterday.toDateString() ? "Yesterday" : "Previous 7 days";
+}
+
+function ChatWorkspace() {
+  const { data: session } = authClient.useSession();
+  const userName = session?.user.name ?? "Workspace member";
+  const userInitials = userName.split(/\s+/).map((part) => part[0]).slice(0, 2).join("").toUpperCase();
   const [sidebarOpen, setSidebarOpen] = useState(true);
-    const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [drawerCitation, setDrawerCitation] = useState<Citation | null>(null);
-  const [messages, setMessages] = useState(initialMessages);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [historyItems, setHistoryItems] = useState<ConversationRecord[]>([]);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [historyError, setHistoryError] = useState(false);
   const [query, setQuery] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [feedback, setFeedback] = useState<Record<number, "up" | "down" | undefined>>({});
+  const [feedback, setFeedback] = useState<Record<string, "up" | "down" | undefined>>({});
   const [searchOpen, setSearchOpen] = useState(false);
   const [historyFilter, setHistoryFilter] = useState("");
   const feedEndRef = useRef<HTMLDivElement>(null);
@@ -107,24 +130,53 @@ export default function Home() {
     feedEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, isLoading]);
 
+  useEffect(() => {
+    let active = true;
+    apiRequest<ConversationRecord[]>("/api/v1/chat/history")
+      .then((conversations) => { if (active) setHistoryItems(conversations); })
+      .catch(() => { if (active) setHistoryError(true); });
+    return () => { active = false; };
+  }, []);
+
   function startNewChat() {
     setMessages([]);
+    setConversationId(null);
     setDrawerCitation(null);
     setMobileSidebarOpen(false);
     setQuery("");
     inputRef.current?.focus();
   }
 
-  function submitQuery(event?: FormEvent) {
+  async function submitQuery(event?: FormEvent) {
     event?.preventDefault();
     const question = query.trim();
     if (!question || isLoading) return;
 
-    setMessages((current) => [...current, { id: Date.now(), role: "user", text: question }]);
+    const userMessage: ChatMessage = { id: Date.now(), role: "user", text: question };
+    setMessages((current) => [...current, userMessage]);
     setQuery("");
     setIsLoading(true);
 
-    window.setTimeout(() => {
+    let activeConversationId = conversationId;
+    try {
+      if (!activeConversationId) {
+        const conversation = await apiRequest<ConversationRecord>("/api/v1/chat/history", {
+          method: "POST",
+          body: JSON.stringify({ title: question.slice(0, 300) }),
+        });
+        activeConversationId = conversation.id;
+        setConversationId(conversation.id);
+        setHistoryItems((items) => [conversation, ...items]);
+      }
+      await apiRequest<StoredMessage>(`/api/v1/chat/history/${activeConversationId}/messages`, {
+        method: "POST",
+        body: JSON.stringify({ role: "user", content: question }),
+      });
+    } catch {
+      setHistoryError(true);
+    }
+
+    window.setTimeout(async () => {
       const isTravelQuestion = /travel|receipt|expense|meal|stipend|overseas|international/i.test(question);
       const nextMessage: ChatMessage = isTravelQuestion
         ? {
@@ -141,6 +193,20 @@ export default function Home() {
           };
       setMessages((current) => [...current, nextMessage]);
       setIsLoading(false);
+      if (activeConversationId) {
+        try {
+          await apiRequest<StoredMessage>(`/api/v1/chat/history/${activeConversationId}/messages`, {
+            method: "POST",
+            body: JSON.stringify({
+              role: "assistant",
+              content: nextMessage.text,
+              citations: nextMessage.citations ?? [],
+            }),
+          });
+        } catch {
+          setHistoryError(true);
+        }
+      }
     }, 1150);
   }
 
@@ -157,6 +223,24 @@ export default function Home() {
   }
 
   const visibleHistory = historyItems.filter((item) => item.title.toLowerCase().includes(historyFilter.toLowerCase()));
+
+  async function openConversation(conversation: ConversationRecord) {
+    try {
+      const storedMessages = await apiRequest<StoredMessage[]>(`/api/v1/chat/history/${conversation.id}/messages`);
+      setConversationId(conversation.id);
+      setMessages(storedMessages.map((message) => ({
+        id: message.id,
+        role: message.role,
+        text: message.content,
+        citations: message.citations.map(citationFromRecord),
+        fallback: message.content === "Information not found in internal knowledge base.",
+      })));
+      setMobileSidebarOpen(false);
+      setDrawerCitation(null);
+    } catch {
+      setHistoryError(true);
+    }
+  }
 
   return (
     <main className={`workspace ${sidebarOpen ? "sidebar-expanded" : "sidebar-collapsed"} ${drawerCitation ? "drawer-visible" : ""}`}>
@@ -183,10 +267,11 @@ export default function Home() {
           <div className="history-scroll">
             <div className="sidebar-section-label">Your conversations <MoreHorizontal size={16} /></div>
             {visibleHistory.map((item, index) => (
-              <button className={`history-item ${item.active && messages.length > 0 ? "selected" : ""}`} key={item.title} onClick={() => { setMobileSidebarOpen(false); item.active ? setMessages(initialMessages) : startNewChat(); }}>
-                <MessageSquare size={15} /><span>{item.title}</span>{index === 0 && item.active && <span className="history-active-dot" />}
+              <button className={`history-item ${conversationId === item.id ? "selected" : ""}`} key={item.id} onClick={() => { void openConversation(item); }}>
+                <MessageSquare size={15} /><span>{item.title}</span><small className="history-date">{historyDate(item.updated_at)}</small>{index === 0 && conversationId === item.id && <span className="history-active-dot" />}
               </button>
             ))}
+            {historyError && <p className="empty-history">History sync unavailable</p>}
             {visibleHistory.length === 0 && <p className="empty-history">No matches found</p>}
             <div className="history-divider" />
             <button className="sidebar-nav-item"><Files size={15} /><span>Knowledge sources</span><span className="nav-count">12</span></button>
@@ -194,7 +279,7 @@ export default function Home() {
 
           <div className="sidebar-bottom">
             <div className="workspace-status"><span className="status-pulse" /><div><strong>Knowledge base</strong><small>Synced just now</small></div><Check size={14} /></div>
-            <button className="account-button"><div className="avatar">MQ</div><span className="account-copy"><strong>Moosa Qureshi</strong><small>Workspace member</small></span><ChevronDown size={14} /></button>
+            <button className="account-button" onClick={async () => { await authClient.signOut(); window.location.assign("/sign-in"); }} title="Sign out"><div className="avatar">{userInitials}</div><span className="account-copy"><strong>{userName}</strong><small>{session?.user.email}</small></span><ChevronDown size={14} /></button>
           </div>
         </>}
         {!sidebarOpen && <div className="collapsed-rail">
@@ -202,8 +287,7 @@ export default function Home() {
           <button className="rail-icon" onClick={() => setSearchOpen((open) => !open)} title="Search conversations"><Search size={17} /></button>
           <button className="rail-icon active" title="Chat history"><Clock3 size={17} /></button>
           <button className="rail-icon" title="Knowledge sources"><Files size={17} /></button>
-          <div className="rail-spacer" /><div className="avatar small">MQ</div>
-          <div className="rail-spacer" /><div className="avatar small">MQ</div>
+          <div className="rail-spacer" /><div className="avatar small">{userInitials}</div>
         </div>}
       </aside>
       {mobileSidebarOpen && <button className="sidebar-scrim" onClick={() => setMobileSidebarOpen(false)} aria-label="Close chat history" />}
@@ -217,7 +301,7 @@ export default function Home() {
             <span className="preview-badge"><span /> PREVIEW</span>
             <button className="icon-button help-button" title="Help" aria-label="Help"><CircleHelp size={17} /></button>
             <div className="topbar-divider" />
-            <button className="user-chip"><span className="avatar tiny">MQ</span><span>Moosa</span><ChevronDown size={13} /></button>
+            <button className="user-chip" title="Sign out" onClick={async () => { await authClient.signOut(); window.location.assign("/sign-in"); }}><span className="avatar tiny">{userInitials}</span><span>{userName.split(" ")[0]}</span><ChevronDown size={13} /></button>
           </div>
         </header>
 
@@ -243,7 +327,7 @@ export default function Home() {
             <div className="message-list">
               {messages.map((message) => message.role === "user" ? (
                 <article className="user-message" key={message.id}>
-                  <div className="user-message-label"><div className="avatar tiny">MQ</div><span>You</span><time>Just now</time></div>
+                  <div className="user-message-label"><div className="avatar tiny">{userInitials}</div><span>You</span><time>Just now</time></div>
                   <div className="user-bubble">{message.text}</div>
                 </article>
               ) : (
@@ -254,7 +338,7 @@ export default function Home() {
                       if (!part.startsWith("[Doc: ")) return <span key={index}>{part}</span>;
                       return <CitationPill key={index} citation={message.citations?.[0] ?? travelCitation} onOpen={() => setDrawerCitation(message.citations?.[0] ?? travelCitation)} />;
                     })}</div>}
-                    {!message.fallback && <div className="answer-footer"><div className="answer-confidence"><span className="confidence-bars"><i /><i /><i /></span>Answer grounded in <strong>1 source</strong></div><div className="answer-actions"><button className={feedback[message.id] === "up" ? "chosen" : ""} onClick={() => setFeedback((state) => ({ ...state, [message.id]: state[message.id] === "up" ? undefined : "up" }))} aria-label="Helpful answer" title="Helpful"><ThumbsUp size={14} /></button><button className={feedback[message.id] === "down" ? "chosen" : ""} onClick={() => setFeedback((state) => ({ ...state, [message.id]: state[message.id] === "down" ? undefined : "down" }))} aria-label="Not helpful" title="Not helpful"><ThumbsDown size={14} /></button><span className="action-separator" /><button aria-label="Copy answer" title="Copy answer" onClick={() => navigator.clipboard?.writeText(message.text)}><Files size={14} /></button></div></div>}
+                    {!message.fallback && <div className="answer-footer"><div className="answer-confidence"><span className="confidence-bars"><i /><i /><i /></span>Answer grounded in <strong>1 source</strong></div><div className="answer-actions"><button className={feedback[String(message.id)] === "up" ? "chosen" : ""} onClick={() => setFeedback((state) => ({ ...state, [String(message.id)]: state[String(message.id)] === "up" ? undefined : "up" }))} aria-label="Helpful answer" title="Helpful"><ThumbsUp size={14} /></button><button className={feedback[String(message.id)] === "down" ? "chosen" : ""} onClick={() => setFeedback((state) => ({ ...state, [String(message.id)]: state[String(message.id)] === "down" ? undefined : "down" }))} aria-label="Not helpful" title="Not helpful"><ThumbsDown size={14} /></button><span className="action-separator" /><button aria-label="Copy answer" title="Copy answer" onClick={() => navigator.clipboard?.writeText(message.text)}><Files size={14} /></button></div></div>}
                   </div>
                   {message.fallback && <div className="fallback-note"><ShieldCheck size={13} /> No unsupported answer was generated.</div>}
                 </article>
@@ -296,4 +380,8 @@ export default function Home() {
       <div className="system-health"><Gauge size={12} /><span>All systems operational</span><span className="health-dot" /></div>
     </main>
   );
+}
+
+export default function Home() {
+  return <AuthGate><ChatWorkspace /></AuthGate>;
 }

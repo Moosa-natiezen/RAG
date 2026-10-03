@@ -6,6 +6,8 @@ from httpx import ASGITransport, AsyncClient
 
 from app.main import app
 
+pytestmark = pytest.mark.usefixtures("mock_better_auth")
+
 
 @pytest.mark.asyncio
 async def test_ingest_text_document_success():
@@ -26,7 +28,8 @@ async def test_ingest_text_document_success():
     }
 
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://test",
+        headers={"Authorization": "Bearer test-token"},
     ) as client:
         response = await client.post(
             "/api/v1/documents/ingest/text", json=payload
@@ -52,7 +55,8 @@ async def test_ingest_text_document_empty():
     }
 
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://test",
+        headers={"Authorization": "Bearer test-token"},
     ) as client:
         response = await client.post(
             "/api/v1/documents/ingest/text", json=payload
@@ -66,7 +70,8 @@ async def test_ingest_file_markdown():
     file_content = b"# HR Travel Reimbursement\nEmployees eligible for $75 daily meal stipend."
 
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://test",
+        headers={"Authorization": "Bearer test-token"},
     ) as client:
         response = await client.post(
             "/api/v1/documents/ingest/file",
@@ -93,7 +98,8 @@ async def test_ingest_file_docx_real():
             file_bytes = f.read()
 
         async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
+            transport=ASGITransport(app=app), base_url="http://test",
+            headers={"Authorization": "Bearer test-token"},
         ) as client:
             response = await client.post(
                 "/api/v1/documents/ingest/file",

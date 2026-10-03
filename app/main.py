@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.v1.router import api_router
 from app.core.config import settings
+from app.core.security import BetterAuthMiddleware
 
 # Structured logging setup
 logging.basicConfig(
@@ -59,6 +60,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(BetterAuthMiddleware)
 
     # Global Exception Handlers
     @app.exception_handler(Exception)

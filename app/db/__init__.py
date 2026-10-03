@@ -1,0 +1,1 @@
+"""Database persistence for chat history and authentication audit records."""

@@ -36,6 +36,15 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     CORS_ORIGINS: List[str] = ["*"]
 
+    # Better Auth / Neon PostgreSQL
+    DATABASE_URL: Optional[str] = Field(default=None, repr=False)
+    BETTER_AUTH_SECRET: Optional[str] = Field(default=None, repr=False)
+    BETTER_AUTH_URL: str = "http://localhost:3000"
+
+    @property
+    def BETTER_AUTH_JWKS_URL(self) -> str:
+        return f"{self.BETTER_AUTH_URL.rstrip('/')}/api/auth/jwks"
+
     # Vector Storage (Qdrant primary with ChromaDB fallback)
     VECTOR_DB_TYPE: Literal["qdrant", "chroma"] = "qdrant"
     QDRANT_HOST: str = "localhost"
