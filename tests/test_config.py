@@ -18,7 +18,7 @@ def test_default_settings():
     assert settings.PARENT_CHUNK_SIZE == 1000
     assert settings.CHILD_CHUNK_SIZE == 250
     assert settings.CHILD_CHUNK_OVERLAP == 50
-    assert settings.FALLBACK_MESSAGE == "Information not found in internal knowledge base."
+    assert settings.FALLBACK_MESSAGE == "Information not found in internal knowledge base"
 
 
 def test_chunk_size_validation():

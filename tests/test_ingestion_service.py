@@ -69,3 +69,25 @@ async def test_atomic_dual_indexing_pipeline():
 
     # Verify both indices share the same child chunk ID
     assert dense_hits[0]["child_id"] == bm25_hits[0]["child_id"]
+
+    replacement = DocumentSection(
+        title="Updated HR Remote Work Guidelines",
+        header_path=["HR", "Remote Work"],
+        content="Replacement policy clause HR-REMOTE-2027 sets a $900 annual equipment limit.",
+        section_header="HR > Remote Work",
+        doc_id="hr_remote_2026",
+        metadata={"access_control_list": ["group_hr", "group_all"]},
+    )
+    replacement_response = await service.ingest_sections(
+        sections=[replacement],
+        doc_id="hr_remote_2026",
+        title="Updated HR Remote Work Guidelines",
+    )
+
+    assert bm25.search_sparse("HR-REMOTE-2026", acl_groups=["group_all"]) == []
+    assert bm25.search_sparse("HR-REMOTE-2027", acl_groups=["group_all"])
+    point_count = await vector_store.client.count(
+        collection_name=vector_store.collection_name,
+        exact=True,
+    )
+    assert point_count.count == replacement_response.child_chunks_created

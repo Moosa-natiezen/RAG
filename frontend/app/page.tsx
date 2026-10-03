@@ -39,6 +39,13 @@ type Citation = {
   updated: string;
   parentText: string;
   childText: string;
+  sourceUrl?: string;
+};
+
+type CompletionResponse = {
+  answer: string;
+  citations: Record<string, unknown>[];
+  fallback: boolean;
 };
 
 type ChatMessage = {
@@ -64,20 +71,6 @@ type StoredMessage = {
   created_at: string;
 };
 
-const travelCitation: Citation = {
-  id: "travel-expense",
-  docId: "hr_policy_2026_v3",
-  section: "Section 4.2 - Travel Expense Reimbursement",
-  title: "Remote Work & Expense Policy 2026",
-  updated: "Aug 15, 2026",
-  parentText:
-    "Employees traveling internationally for approved business are eligible for a daily meal stipend. The stipend is intended to cover reasonable meal costs during the trip. Receipts for travel expenses must be submitted through the Expense Portal within 14 business days after the expense is incurred. Managers review submissions against the applicable travel policy before reimbursement is approved.",
-  childText:
-    "Employees are eligible for a daily meal stipend of up to $75 during international business travel. Receipts must be submitted within 14 business days via the Expense Portal.",
-};
-
-const citationToken = `[Doc: ${travelCitation.docId}, Section: ${travelCitation.section}]`;
-
 function CitationPill({ citation, onOpen }: { citation: Citation; onOpen: () => void }) {
   return (
     <button className="citation-pill" onClick={onOpen} type="button" aria-label={`Open source: ${citation.docId}, ${citation.section}`} data-tooltip={citation.childText}>
@@ -95,6 +88,7 @@ function citationFromRecord(record: Record<string, unknown>): Citation {
     updated: String(record.updated ?? record.last_updated ?? "Verified source"),
     parentText: String(record.parentText ?? record.parent_text ?? record.childText ?? record.child_text ?? ""),
     childText: String(record.childText ?? record.child_text ?? "Source passage"),
+    sourceUrl: typeof (record.sourceUrl ?? record.source_url) === "string" ? String(record.sourceUrl ?? record.source_url) : undefined,
   };
 }
 
@@ -118,6 +112,7 @@ function ChatWorkspace() {
   const [historyItems, setHistoryItems] = useState<ConversationRecord[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [historyError, setHistoryError] = useState(false);
+  const [requestError, setRequestError] = useState("");
   const [query, setQuery] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [feedback, setFeedback] = useState<Record<string, "up" | "down" | undefined>>({});
@@ -155,6 +150,7 @@ function ChatWorkspace() {
     const userMessage: ChatMessage = { id: Date.now(), role: "user", text: question };
     setMessages((current) => [...current, userMessage]);
     setQuery("");
+    setRequestError("");
     setIsLoading(true);
 
     let activeConversationId = conversationId;
@@ -176,23 +172,19 @@ function ChatWorkspace() {
       setHistoryError(true);
     }
 
-    window.setTimeout(async () => {
-      const isTravelQuestion = /travel|receipt|expense|meal|stipend|overseas|international/i.test(question);
-      const nextMessage: ChatMessage = isTravelQuestion
-        ? {
-            id: Date.now() + 1,
-            role: "assistant",
-            text: `Receipts are due within 14 business days through the Expense Portal. ${citationToken}\n\nThe meal stipend for international business travel is up to $75 per day. ${citationToken}`,
-            citations: [travelCitation],
-          }
-        : {
-            id: Date.now() + 1,
-            role: "assistant",
-            text: "Information not found in internal knowledge base.",
-            fallback: true,
-          };
+    try {
+      const completion = await apiRequest<CompletionResponse>("/api/v1/chat/completions", {
+        method: "POST",
+        body: JSON.stringify({ query: question, stream: false }),
+      });
+      const nextMessage: ChatMessage = {
+        id: Date.now() + 1,
+        role: "assistant",
+        text: completion.answer,
+        citations: completion.citations.map(citationFromRecord),
+        fallback: completion.fallback,
+      };
       setMessages((current) => [...current, nextMessage]);
-      setIsLoading(false);
       if (activeConversationId) {
         try {
           await apiRequest<StoredMessage>(`/api/v1/chat/history/${activeConversationId}/messages`, {
@@ -200,14 +192,18 @@ function ChatWorkspace() {
             body: JSON.stringify({
               role: "assistant",
               content: nextMessage.text,
-              citations: nextMessage.citations ?? [],
+              citations: completion.citations,
             }),
           });
         } catch {
           setHistoryError(true);
         }
       }
-    }, 1150);
+    } catch (error) {
+      setRequestError(error instanceof Error ? error.message : "The knowledge service is unavailable.");
+    } finally {
+      setIsLoading(false);
+    }
   }
 
   function handleInputKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -233,7 +229,7 @@ function ChatWorkspace() {
         role: message.role,
         text: message.content,
         citations: message.citations.map(citationFromRecord),
-        fallback: message.content === "Information not found in internal knowledge base.",
+        fallback: message.content === "Information not found in internal knowledge base",
       })));
       setMobileSidebarOpen(false);
       setDrawerCitation(null);
@@ -325,6 +321,7 @@ function ChatWorkspace() {
             </div>}
 
             <div className="message-list">
+              {requestError && <div className="request-error" role="alert"><CircleHelp size={14} />{requestError}</div>}
               {messages.map((message) => message.role === "user" ? (
                 <article className="user-message" key={message.id}>
                   <div className="user-message-label"><div className="avatar tiny">{userInitials}</div><span>You</span><time>Just now</time></div>
@@ -334,11 +331,16 @@ function ChatWorkspace() {
                 <article className="assistant-message" key={message.id}>
                   <div className="assistant-heading"><div className="assistant-mark"><Sparkles size={15} /></div><span>Northstar</span><span className="verified-label"><ShieldCheck size={12} /> GROUNDED</span><time>Just now</time><button className="icon-button message-more" title="More options" aria-label="More options"><MoreHorizontal size={17} /></button></div>
                   <div className={`answer-card ${message.fallback ? "fallback-card" : ""}`}>
-                    {message.fallback ? <div className="fallback-content"><div className="warning-icon"><CircleHelp size={17} /></div><div><strong>Outside your knowledge base</strong><p>{message.text}</p></div></div> : <div className="answer-copy">{message.text.split(/(\[Doc: [^\]]+\])/g).map((part, index) => {
-                      if (!part.startsWith("[Doc: ")) return <span key={index}>{part}</span>;
-                      return <CitationPill key={index} citation={message.citations?.[0] ?? travelCitation} onOpen={() => setDrawerCitation(message.citations?.[0] ?? travelCitation)} />;
-                    })}</div>}
-                    {!message.fallback && <div className="answer-footer"><div className="answer-confidence"><span className="confidence-bars"><i /><i /><i /></span>Answer grounded in <strong>1 source</strong></div><div className="answer-actions"><button className={feedback[String(message.id)] === "up" ? "chosen" : ""} onClick={() => setFeedback((state) => ({ ...state, [String(message.id)]: state[String(message.id)] === "up" ? undefined : "up" }))} aria-label="Helpful answer" title="Helpful"><ThumbsUp size={14} /></button><button className={feedback[String(message.id)] === "down" ? "chosen" : ""} onClick={() => setFeedback((state) => ({ ...state, [String(message.id)]: state[String(message.id)] === "down" ? undefined : "down" }))} aria-label="Not helpful" title="Not helpful"><ThumbsDown size={14} /></button><span className="action-separator" /><button aria-label="Copy answer" title="Copy answer" onClick={() => navigator.clipboard?.writeText(message.text)}><Files size={14} /></button></div></div>}
+                    {message.fallback ? <div className="fallback-content"><div className="warning-icon"><CircleHelp size={17} /></div><div><strong>Outside your knowledge base</strong><p>{message.text}</p></div></div> : <div className="answer-copy">{(() => {
+                      let citationIndex = 0;
+                      return message.text.split(/(\[Doc: [^\]]+\])/g).map((part, index) => {
+                        if (!part.startsWith("[Doc: ")) return <span key={index}>{part}</span>;
+                        const citation = message.citations?.[citationIndex++];
+                        if (!citation) return <span key={index}>{part}</span>;
+                        return <CitationPill key={index} citation={citation} onOpen={() => setDrawerCitation(citation)} />;
+                      });
+                    })()}</div>}
+                    {!message.fallback && <div className="answer-footer"><div className="answer-confidence"><span className="confidence-bars"><i /><i /><i /></span>Answer grounded in <strong>{message.citations?.length ?? 0} {message.citations?.length === 1 ? "source" : "sources"}</strong></div><div className="answer-actions"><button className={feedback[String(message.id)] === "up" ? "chosen" : ""} onClick={() => setFeedback((state) => ({ ...state, [String(message.id)]: state[String(message.id)] === "up" ? undefined : "up" }))} aria-label="Helpful answer" title="Helpful"><ThumbsUp size={14} /></button><button className={feedback[String(message.id)] === "down" ? "chosen" : ""} onClick={() => setFeedback((state) => ({ ...state, [String(message.id)]: state[String(message.id)] === "down" ? undefined : "down" }))} aria-label="Not helpful" title="Not helpful"><ThumbsDown size={14} /></button><span className="action-separator" /><button aria-label="Copy answer" title="Copy answer" onClick={() => navigator.clipboard?.writeText(message.text)}><Files size={14} /></button></div></div>}
                   </div>
                   {message.fallback && <div className="fallback-note"><ShieldCheck size={13} /> No unsupported answer was generated.</div>}
                 </article>
@@ -373,7 +375,7 @@ function ChatWorkspace() {
             <div className="citation-id-block"><span>CITATION REFERENCE</span><code>{`[Doc: ${drawerCitation.docId}, Section: ${drawerCitation.section}]`}</code></div>
             <div className="access-note"><ShieldCheck size={14} /><span>Source access verified for your workspace</span><Check size={13} /></div>
           </div>
-          <div className="drawer-footer"><button className="drawer-back" onClick={() => setDrawerCitation(null)}><ArrowLeft size={14} /> Back to answer</button><button className="open-source-button" title="Open source document"><ArrowDown size={14} /> Source details</button></div>
+          <div className="drawer-footer"><button className="drawer-back" onClick={() => setDrawerCitation(null)}><ArrowLeft size={14} /> Back to answer</button><button className="open-source-button" title="Open source document" disabled={!drawerCitation.sourceUrl} onClick={() => drawerCitation.sourceUrl && window.open(drawerCitation.sourceUrl, "_blank", "noopener,noreferrer")}><ArrowDown size={14} /> Source details</button></div>
         </>}
       </aside>
       {drawerCitation && <button className="drawer-scrim" onClick={() => setDrawerCitation(null)} aria-label="Close citation drawer" />}

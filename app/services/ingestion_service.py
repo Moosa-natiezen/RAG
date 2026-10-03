@@ -24,11 +24,13 @@ class IngestionService:
         embedder: Optional[EmbeddingService] = None,
         vector_store: Optional[VectorStoreService] = None,
         bm25_service: Optional[BM25Service] = None,
+        persist_sparse_index: bool = False,
     ):
         self.chunker = chunker or HierarchicalChunker()
         self.embedder = embedder or EmbeddingService()
         self.vector_store = vector_store or VectorStoreService()
         self.bm25_service = bm25_service or BM25Service()
+        self.persist_sparse_index = persist_sparse_index
 
     async def ingest_sections(
         self,
@@ -52,12 +54,17 @@ class IngestionService:
         # Step 2: Dense Embedding Generation
         child_texts = [c.text for c in child_chunks]
         vectors = await self.embedder.embed_documents(child_texts)
+        if len(vectors) != len(child_chunks):
+            raise RuntimeError("Embedding provider returned a mismatched number of vectors.")
 
         # Step 3: Upsert into Qdrant Vector Database
+        await self.vector_store.delete_document(doc_id)
         await self.vector_store.upsert_chunks(child_chunks, vectors)
 
         # Step 4: Index into Sparse BM25 Engine
         self.bm25_service.index_chunks(child_chunks)
+        if self.persist_sparse_index:
+            self.bm25_service.save()
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000.0
 
@@ -91,4 +98,5 @@ shared_ingestion_service = IngestionService(
     embedder=shared_embedder,
     vector_store=shared_vector_store,
     bm25_service=shared_bm25_service,
+    persist_sparse_index=True,
 )

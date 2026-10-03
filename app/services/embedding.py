@@ -40,6 +40,8 @@ class EmbeddingService:
             )
         else:
             self.client = None
+            if settings.ENV in {"staging", "production"}:
+                raise RuntimeError("OPENAI_API_KEY is required for embeddings outside development/test.")
             logger.info(
                 "OpenAI API key not configured or in test mode. Utilizing deterministic mock embedding generator."
             )
@@ -73,10 +75,8 @@ class EmbeddingService:
                     all_embeddings.extend(batch_vectors)
                 return all_embeddings
             except Exception as exc:
-                logger.warning(
-                    "OpenAI API embedding error: %s. Falling back to deterministic embedding generator.",
-                    exc,
-                )
+                logger.exception("OpenAI embedding request failed")
+                raise RuntimeError("OpenAI embedding provider failed.") from exc
 
         # Deterministic offline mock generator for development & CI
         return [

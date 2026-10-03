@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.security import BetterAuthMiddleware
+from app.services.ingestion_service import shared_bm25_service, shared_vector_store
 
 # Structured logging setup
 logging.basicConfig(
@@ -31,7 +32,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         settings.VECTOR_DB_TYPE,
         settings.EMBEDDING_MODEL,
     )
-    # Startup tasks (client pooling, warmup) occur here
+    shared_bm25_service.load()
+    await shared_vector_store.initialize()
     yield
     # Shutdown cleanup occurs here
     logger.info("Enterprise RAG Pipeline services shut down cleanly.")

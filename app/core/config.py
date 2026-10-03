@@ -103,7 +103,7 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: Optional[str] = None
     DEFAULT_LLM_PROVIDER: Literal["openai", "anthropic"] = "openai"
     DEFAULT_LLM_MODEL: str = "gpt-4o"
-    FALLBACK_MESSAGE: str = "Information not found in internal knowledge base."
+    FALLBACK_MESSAGE: str = "Information not found in internal knowledge base"
     LLM_TEMPERATURE: float = 0.0
     LLM_MAX_TOKENS: int = 1024
 

@@ -32,15 +32,22 @@ class BM25Service:
         return tokens
 
     def index_chunks(self, chunks: List[ChildChunk]) -> int:
-        """Add child chunks to BM25 index and rebuild frequency model."""
+        """Replace matching document records and rebuild the BM25 frequency model."""
         if not chunks:
             return 0
 
+        replaced_doc_ids = {chunk.doc_id for chunk in chunks}
+        retained_chunks = [
+            item for item in self.corpus_chunks
+            if item.get("doc_id") not in replaced_doc_ids
+        ]
         for chunk in chunks:
-            payload = chunk.to_payload()
-            self.corpus_chunks.append(payload)
-            self.tokenized_corpus.append(self.tokenize(chunk.text))
+            retained_chunks.append(chunk.to_payload())
 
+        self.corpus_chunks = retained_chunks
+        self.tokenized_corpus = [
+            self.tokenize(item.get("text", "")) for item in self.corpus_chunks
+        ]
         self.bm25 = BM25Plus(self.tokenized_corpus)
         logger.info(
             "BM25 index updated: %d total documents indexed.",

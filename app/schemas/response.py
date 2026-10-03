@@ -48,6 +48,7 @@ class CitationItem(BaseModel):
         default=None,
         description="Specific child excerpt (250 tokens) highlighted in parent",
     )
+    title: Optional[str] = Field(default=None, description="Human-readable source document title")
     source_url: Optional[str] = Field(
         default=None, description="External document URL"
     )

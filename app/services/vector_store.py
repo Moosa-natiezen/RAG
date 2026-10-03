@@ -1,6 +1,7 @@
 """Vector Database Storage Service (Production Qdrant with In-Memory Embedded Fallback)."""
 
 import logging
+import uuid
 from typing import Any, Dict, List, Optional
 
 from qdrant_client import AsyncQdrantClient, models
@@ -41,6 +42,7 @@ class VectorStoreService:
                 remote_client = AsyncQdrantClient(
                     host=self.host,
                     port=self.port,
+                    api_key=settings.QDRANT_API_KEY,
                     timeout=1.5,
                     check_compatibility=False,
                 )
@@ -48,7 +50,9 @@ class VectorStoreService:
                 self.client = remote_client
                 self._is_embedded = False
                 logger.info("Connected to remote Qdrant at %s:%d", self.host, self.port)
-            except Exception:
+            except Exception as exc:
+                if settings.ENV in {"staging", "production"}:
+                    raise RuntimeError("Configured Qdrant vector store is unavailable.") from exc
                 logger.info(
                     "Remote Qdrant not reachable at %s:%d. Initializing embedded in-memory Qdrant engine.",
                     self.host,
@@ -108,9 +112,10 @@ class VectorStoreService:
             await self.initialize()
 
         points = []
+        if len(chunks) != len(vectors):
+            raise ValueError("Each child chunk must have exactly one embedding vector.")
         for chunk, vector in zip(chunks, vectors):
-            # Compute stable positive 64-bit integer ID from child_id
-            point_id = abs(hash(chunk.child_id)) % (2**63 - 1)
+            point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, chunk.child_id))
             payload = chunk.to_payload()
             points.append(
                 models.PointStruct(
@@ -125,6 +130,24 @@ class VectorStoreService:
             points=points,
         )
         return len(points)
+
+    async def delete_document(self, doc_id: str) -> None:
+        """Remove all indexed child points belonging to a document before replacement."""
+        if not self.client:
+            await self.initialize()
+        await self.client.delete(
+            collection_name=self.collection_name,
+            points_selector=models.FilterSelector(
+                filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="doc_id",
+                            match=models.MatchValue(value=doc_id),
+                        )
+                    ]
+                )
+            ),
+        )
 
     async def search_dense(
         self,
