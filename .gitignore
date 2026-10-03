@@ -37,6 +37,11 @@ ENV/
 *.swp
 *.swo
 
+# Frontend
+node_modules/
+.next/
+out/
+
 # Testing & Coverage
 .pytest_cache/
 .coverage
